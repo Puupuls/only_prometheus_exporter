@@ -12,10 +12,11 @@ metrics that I need into one exporter.
 ### ToDo:
 - [X] Support nvidia gpu metrics
 - [X] Support filesystem metrics
-- [ ] Support CPU metrics
+- [X] Support CPU metrics
 - [ ] Support network metrics
-- [ ] Support memory metrics
+- [X] Support memory metrics
+- [X] Support host metrics
 - [ ] Support docker metrics
 - [ ] Provide example grafana dashboard
 - [ ] Allow installation using apt
-- [ ] Add support for windows and mac
+- [ ] Verify support for non-linux systems

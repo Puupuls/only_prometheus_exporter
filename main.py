@@ -1,55 +1,14 @@
 import os
 import platform
 import re
+from datetime import datetime
+
 import psutil
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from uvicorn import run
-
+from cpuinfo import cpu
 import nvsmi
-
-
-def get_specs():
-    INFO = {}
-
-    INFO['hostname'] = os.uname()[1]
-    INFO['kernel_version'] = os.uname()[2]
-    INFO['os'] = os.uname()[0]
-
-    with open('/etc/lsb-release', 'r') as f:
-        for line in f.readlines():
-            if 'DISTRIB_RELEASE' in line:
-                INFO['os_version'] = line.split('=')[1].strip().strip('"')
-            if 'DISTRIB_ID' in line:
-                INFO['os_name'] = line.split('=')[1].strip().strip('"')
-
-    INFO['os_architecture'] = platform.architecture()[0]
-
-    with open('/proc/meminfo', 'r') as f:
-        for line in f.readlines():
-            if 'MemTotal' in line:
-                INFO['ram_kb'] = line.split(':')[1].strip().split(' ')[0]
-            if 'SwapTotal' in line:
-                INFO['swap_kb'] = line.split(':')[1].strip().split(' ')[0]
-
-    with open('/proc/cpuinfo') as f:
-        for line in f.readlines():
-            if 'vendor_id' in line:
-                INFO['cpu_vendor'] = line.split(':')[1].strip()
-            if 'model name' in line:
-                INFO['cpu'] = line.split(':')[1].strip()
-                INFO['cpu_model'] = line.split(':')[1].strip()
-                if 'Intel' in INFO['cpu_vendor']:
-                    INFO['cpu_model'] = re.sub(r'Intel\(R\) Core\(TM\) ', '', INFO['cpu_model'])
-                    INFO['cpu_model'] = re.sub(r' CPU @ .*', '', INFO['cpu_model'])
-                elif 'AMD' in INFO['cpu_vendor']:
-                    INFO['cpu_model'] = re.sub(r'AMD ', '', INFO['cpu_model'])
-                    INFO['cpu_model'] = re.sub(r' Processor', '', INFO['cpu_model'])
-            if 'cpu cores' in line:
-                INFO['cpu_cores'] = line.split(':')[1].strip()
-    INFO['cpu_threads'] = os.cpu_count()
-
-    return INFO
 
 
 def get_gpu_prometheus_metrics():
@@ -68,7 +27,7 @@ def get_gpu_prometheus_metrics():
             metrics.append(
                 "nvidia_gpu_info{" + labels +
                 f"driver=\"{gpu.driver}\", "
-                f"mem_total={gpu.mem_total}"
+                f"mem_total=\"{gpu.mem_total}\""
                 "} 1"
             )
             metrics.append(
@@ -159,8 +118,8 @@ def get_gpu_prometheus_metrics():
                 metrics.append(
                     "nvidia_gpu_process_info{" + labels +
                     f"pid=\"{process.pid}\", "
-                    f"process_name=\"{process.name}\", "
-                    f"used_memory={process.used_memory}"
+                    f"process_name=\"{process.process_name}\", "
+                    f"used_memory=\"{process.used_memory}\""
                     "} 1"
                 )
 
@@ -209,6 +168,178 @@ def get_disk_prometheus_metrics():
 def get_cpu_prometheus_metrics():
     metrics = []
 
+    processors = set([i['physical id'] for i in cpu.info])
+    cores = len(set([i['core id'] for i in cpu.info]))
+    threads = len(set([i['processor'] for i in cpu.info]))
+
+    metrics.append(
+        "cpu_info{"
+        f"processors=\"{len(processors)}\", "
+        f"cores=\"{cores}\", "
+        f"threads=\"{threads}\" "
+        "} 1"
+    )
+
+    for processor in processors:
+        processor_threads_list = [i for i in cpu.info if i['physical id'] == processor]
+        processor_cores = len(set([i['core id'] for i in processor_threads_list]))
+        processor_threads = len(set([i['processor'] for i in processor_threads_list]))
+
+        metrics.append(
+            "cpu_processor_info{"
+            f"vendor=\"{processor_threads_list[0]['vendor_id']}\", "
+            f"model=\"{processor_threads_list[0]['model name']}\", "
+            f"processor=\"{processor}\", "
+            f"cores=\"{processor_cores}\", "
+            f"threads=\"{processor_threads}\" "
+            "} 1"
+        )
+
+    for core in cpu.info:
+        metrics.append(
+            "cpu_thread_info{"
+            f"vendor=\"{core['vendor_id']}\", "
+            f"model=\"{core['model name']}\", "
+            f"physical_id=\"{core['physical id']}\", "
+            f"core_id=\"{core['core id']}\", "
+            f"processor_id=\"{core['processor']}\", "
+            f"apic_id=\"{core['apicid']}\" "
+            "} 1"
+        )
+
+    metrics.append(
+        "cpu_frequency{"
+        f"min=\"{psutil.cpu_freq().min*1000*1000}\", "
+        f"max=\"{psutil.cpu_freq().max*1000*1000}\""
+        "} "
+        f"{psutil.cpu_freq().current*1000*1000}"
+    )
+
+    cpu_percents = psutil.cpu_percent(percpu=True)
+    cpu_times = psutil.cpu_times(percpu=True)
+    for idx, thread in enumerate(cpu_percents):
+        metrics.append(
+            "cpu_utilization{"
+            f"thread=\"{idx}\""
+            "} "
+            f"{thread}"
+        )
+    for idx, thread in enumerate(cpu_times):
+        for key, value in thread._asdict().items():
+            metrics.append(
+                "cpu_times{"
+                f"thread=\"{idx}\", "
+                f"mode=\"{key}\""
+                "} "
+                f"{value}"
+            )
+
+    for sensor in psutil.sensors_temperatures()['coretemp']:
+        metrics.append(
+            "cpu_temperature{"
+            f"label=\"{sensor.label}\", "
+            f"high=\"{sensor.high}\", "
+            f"critical=\"{sensor.critical}\" "
+            "} "
+            f"{sensor.current}"
+        )
+        metrics.append(
+            "cpu_temperature_high{"
+            f"label=\"{sensor.label}\""
+            "} "
+            f"{sensor.high}"
+        )
+        metrics.append(
+            "cpu_temperature_critical{"
+            f"label=\"{sensor.label}\""
+            "} "
+            f"{sensor.critical}"
+        )
+    return metrics
+
+
+def get_host_prometheus_metrics():
+    metrics = []
+
+    os_version = 'Unknown'
+    os_name = 'Unknown'
+    with open('/etc/lsb-release', 'r') as f:
+        for line in f.readlines():
+            if 'DISTRIB_RELEASE' in line:
+                os_version = line.split('=')[1].strip().strip('"')
+            if 'DISTRIB_ID' in line:
+                os_name = line.split('=')[1].strip().strip('"')
+
+    metrics.append(
+        "host_info{"
+        f"hostname=\"{os.uname()[1]}\", "
+        f"machine=\"{platform.machine()}\", "
+        f"os=\"{platform.system()}\", "
+        f"os_release=\"{platform.release()}\", "
+        f"os_name=\"{os_name}\", "
+        f"os_version=\"{os_version}\", "
+        f"os_architecture=\"{platform.architecture()[0]}\" "
+        "} 1"
+    )
+
+    metrics.append(
+        "host_boot_time "
+        f"{psutil.boot_time()}"
+    )
+    metrics.append(
+        "host_uptime "
+        f"{datetime.now().timestamp() - psutil.boot_time()}"
+    )
+
+    return metrics
+
+
+def get_memory_prometheus_metrics():
+    metrics = []
+
+    metrics.append(
+        "memory_info{"
+        f"ram_kb=\"{psutil.virtual_memory().total}\", "
+        f"swap_kb=\"{psutil.swap_memory().total}\" "
+        "} 1"
+    )
+    metrics.append(
+        "memory_ram_total"
+        f" {psutil.virtual_memory().total}"
+    )
+    metrics.append(
+        "memory_ram_used"
+        f" {psutil.virtual_memory().used}"
+    )
+    metrics.append(
+        "memory_ram_free"
+        f" {psutil.virtual_memory().free}"
+    )
+    metrics.append(
+        "memory_ram_available"
+        f" {psutil.virtual_memory().available}"
+    )
+    metrics.append(
+        "memory_ram_used_percent"
+        f" {psutil.virtual_memory().percent}"
+    )
+    metrics.append(
+        "memory_swap_total"
+        f" {psutil.swap_memory().total}"
+    )
+    metrics.append(
+        "memory_swap_used"
+        f" {psutil.swap_memory().used}"
+    )
+    metrics.append(
+        "memory_swap_free"
+        f" {psutil.swap_memory().free}"
+    )
+    metrics.append(
+        "memory_swap_used_percent"
+        f" {psutil.swap_memory().percent}"
+    )
+
     return metrics
 
 
@@ -223,11 +354,13 @@ def metrics():
     m1 = get_gpu_prometheus_metrics()
     m2 = get_disk_prometheus_metrics()
     m3 = get_cpu_prometheus_metrics()
+    m4 = get_host_prometheus_metrics()
+    m5 = get_memory_prometheus_metrics()
 
-    response = '\n'.join(m1 + m2 + m3)
+    response = '\n'.join(sorted(m1 + m2 + m3 + m4 + m5))
     # return response as plain text encoding
     return PlainTextResponse(response)
 
 
 if __name__ == "__main__":
-    run(app, host="0.0.0.0", port=8754, reload=True)
+    run(app, host="0.0.0.0", port=8754)
