@@ -18,5 +18,12 @@ metrics that I need into one exporter.
 - [X] Support host metrics
 - [ ] Support docker metrics
 - [ ] Provide example grafana dashboard
+- [X] Create builds to remove need to install packages
 - [ ] Allow installation using apt
 - [ ] Verify support for non-linux systems
+- [X] Support linux screen metrics
+- [ ] Add config options
+  - [ ] Basic auth
+  - [ ] SSL
+  - [ ] Port
+  - [ ] Host

@@ -2,13 +2,18 @@ import os
 import platform
 import re
 from datetime import datetime
-
 import psutil
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from uvicorn import run
 from cpuinfo import cpu
 import nvsmi
+try:
+    from screenutils import list_screens
+except ImportError:
+    print("screenutils not installed")
+    def list_screens():
+        return []
 
 
 def get_gpu_prometheus_metrics():
@@ -233,28 +238,44 @@ def get_cpu_prometheus_metrics():
                 "} "
                 f"{value}"
             )
+    temps = psutil.sensors_temperatures()
+    if 'coretemp' in temps:
+        for sensor in temps['coretemp']:
+            metrics.append(
+                "cpu_temperature{"
+                f"label=\"{sensor.label}\", "
+                f"high=\"{sensor.high}\", "
+                f"critical=\"{sensor.critical}\" "
+                "} "
+                f"{sensor.current}"
+            )
+            metrics.append(
+                "cpu_temperature_high{"
+                f"label=\"{sensor.label}\""
+                "} "
+                f"{sensor.high}"
+            )
+            metrics.append(
+                "cpu_temperature_critical{"
+                f"label=\"{sensor.label}\""
+                "} "
+                f"{sensor.critical}"
+            )
+    fans = psutil.sensors_fans()
+    for sensor_cat in fans.items():
+        for sensor in sensor_cat[1]:
+            metrics.append(
+                "fan_speed{"
+                f"category=\"{sensor_cat[0]}\", "
+                f"label=\"{sensor.label}\""
+                "} "
+                f"{sensor.current}"
+            )
+    metrics.append(
+        "process_count "
+        f"{len(psutil.pids())}"
+    )
 
-    for sensor in psutil.sensors_temperatures()['coretemp']:
-        metrics.append(
-            "cpu_temperature{"
-            f"label=\"{sensor.label}\", "
-            f"high=\"{sensor.high}\", "
-            f"critical=\"{sensor.critical}\" "
-            "} "
-            f"{sensor.current}"
-        )
-        metrics.append(
-            "cpu_temperature_high{"
-            f"label=\"{sensor.label}\""
-            "} "
-            f"{sensor.high}"
-        )
-        metrics.append(
-            "cpu_temperature_critical{"
-            f"label=\"{sensor.label}\""
-            "} "
-            f"{sensor.critical}"
-        )
     return metrics
 
 
@@ -298,12 +319,6 @@ def get_memory_prometheus_metrics():
     metrics = []
 
     metrics.append(
-        "memory_info{"
-        f"ram_kb=\"{psutil.virtual_memory().total}\", "
-        f"swap_kb=\"{psutil.swap_memory().total}\" "
-        "} 1"
-    )
-    metrics.append(
         "memory_ram_total"
         f" {psutil.virtual_memory().total}"
     )
@@ -343,6 +358,35 @@ def get_memory_prometheus_metrics():
     return metrics
 
 
+def get_screen_prometheus_metrics():
+    metrics = []
+
+    screens = list_screens()
+    metrics.append(
+        "screen_count "
+        f"{len(screens)}"
+    )
+    for screen in screens:
+        command = (f"ps u -p $(ps -el | grep $(ps -el | grep {screen.id} | "
+                   "grep bash | awk '{print $4}') | grep -v bash | awk '{print $4}')")
+        output = os.popen(command).read()
+        if output:
+            output = output.split('\n')[-2]
+            output = " ".join(output.split()[10:])
+
+        metrics.append(
+            "screen_info{"
+            f"pid=\"{screen.id}\", "
+            f"open_time=\"{datetime.strptime(screen._date, '%m/%d/%Y %I:%M:%S %p').timestamp()}\", "
+            f"status=\"{screen.status}\", "
+            f"name=\"{screen.name}\", "
+            f"command=\"{output}\" "
+            "} 1"
+        )
+
+    return metrics
+
+
 app = FastAPI(
     docs_url=None,
     redoc_url=None,
@@ -356,8 +400,9 @@ def metrics():
     m3 = get_cpu_prometheus_metrics()
     m4 = get_host_prometheus_metrics()
     m5 = get_memory_prometheus_metrics()
+    m6 = get_screen_prometheus_metrics()
 
-    response = '\n'.join(sorted(m1 + m2 + m3 + m4 + m5))
+    response = '\n'.join(sorted(m1 + m2 + m3 + m4 + m5 + m6))
     # return response as plain text encoding
     return PlainTextResponse(response)
 
