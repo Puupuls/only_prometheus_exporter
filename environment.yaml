@@ -1,0 +1,11 @@
+name: exporter
+channels:
+  - defaults
+  - anaconda
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pyinstaller
+  - psutil
+  - fastapi
+  - uvicorn

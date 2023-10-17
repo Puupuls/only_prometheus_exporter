@@ -1,5 +1,5 @@
-# the_only_prometheus_exporter
-## One exporter to rule them all
+# only_prometheus_exporter
+## One exporter to rule them all - Universal metrics exporter for prometheus
 
 I got bored of setting up multiple exporters and configuring multi port access im my firewall for each server so I consolidated all 
 metrics that I need into one exporter.
